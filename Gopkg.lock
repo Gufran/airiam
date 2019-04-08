@@ -68,15 +68,17 @@
   version = "v1.1.2"
 
 [[projects]]
-  digest = "1:7711bc85fa91b919713feda232ffe0bd4ebb0e8426b9c0de6c6f476e0eb9b7c2"
+  branch = "master"
+  digest = "1:5198256062471600b7451e7ab4038ed6bab78e59e64dcad6841feb5797fbf00d"
   name = "github.com/nlopes/slack"
   packages = [
     ".",
+    "internal/errorsx",
+    "internal/timex",
     "slackutilsx",
   ]
   pruneopts = "UT"
-  revision = "a7deeca7935c178aa865249bab511daf816288ba"
-  version = "v0.5.0"
+  revision = "c33a46b52751322265b0e3f6243aaa462c738684"
 
 [[projects]]
   digest = "1:cf31692c14422fa27c83a05292eb5cbe0fb2775972e8f1f8446a71549bd8980b"

@@ -48,32 +48,62 @@ type statusCodeError struct {
 }
 
 func (t statusCodeError) Error() string {
-	// TODO: this is a bad error string, should clean it up with a breaking changes
-	// merger.
-	return fmt.Sprintf("Slack server error: %s.", t.Status)
+	return fmt.Sprintf("slack server error: %s", t.Status)
 }
 
 func (t statusCodeError) HTTPStatusCode() int {
 	return t.Code
 }
 
+// RateLimitedError represents the rate limit respond from slack
 type RateLimitedError struct {
 	RetryAfter time.Duration
 }
 
 func (e *RateLimitedError) Error() string {
-	return fmt.Sprintf("Slack rate limit exceeded, retry after %s", e.RetryAfter)
+	return fmt.Sprintf("slack rate limit exceeded, retry after %s", e.RetryAfter)
 }
 
 func fileUploadReq(ctx context.Context, path string, values url.Values, r io.Reader) (*http.Request, error) {
 	req, err := http.NewRequest("POST", path, r)
-
-	req = req.WithContext(ctx)
 	if err != nil {
 		return nil, err
 	}
+	req = req.WithContext(ctx)
+
 	req.URL.RawQuery = (values).Encode()
 	return req, nil
+}
+
+func downloadFile(client httpClient, token string, downloadURL string, writer io.Writer, d debug) error {
+	if downloadURL == "" {
+		return fmt.Errorf("received empty download URL")
+	}
+
+	req, err := http.NewRequest("GET", downloadURL, &bytes.Buffer{})
+	if err != nil {
+		return err
+	}
+
+	var bearer = "Bearer " + token
+	req.Header.Add("Authorization", bearer)
+	req.WithContext(context.Background())
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+
+	defer resp.Body.Close()
+
+	err = checkStatusCode(resp, d)
+	if err != nil {
+		return err
+	}
+
+	_, err = io.Copy(writer, resp.Body)
+
+	return err
 }
 
 func parseResponseBody(body io.ReadCloser, intf interface{}, d debug) error {
@@ -123,7 +153,7 @@ func postWithMultipartResponse(ctx context.Context, client httpClient, path, nam
 			return
 		}
 	}()
-	req, err := fileUploadReq(ctx, APIURL+path, values, pipeReader)
+	req, err := fileUploadReq(ctx, path, values, pipeReader)
 	if err != nil {
 		return err
 	}
@@ -136,19 +166,11 @@ func postWithMultipartResponse(ctx context.Context, client httpClient, path, nam
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode == http.StatusTooManyRequests {
-		retry, err := strconv.ParseInt(resp.Header.Get("Retry-After"), 10, 64)
-		if err != nil {
-			return err
-		}
-		return &RateLimitedError{time.Duration(retry) * time.Second}
+	err = checkStatusCode(resp, d)
+	if err != nil {
+		return err
 	}
 
-	// Slack seems to send an HTML body along with 5xx error codes. Don't parse it.
-	if resp.StatusCode != http.StatusOK {
-		logResponse(resp, d)
-		return statusCodeError{Code: resp.StatusCode, Status: resp.Status}
-	}
 	select {
 	case err = <-errc:
 		return err
@@ -165,18 +187,9 @@ func doPost(ctx context.Context, client httpClient, req *http.Request, intf inte
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode == http.StatusTooManyRequests {
-		retry, err := strconv.ParseInt(resp.Header.Get("Retry-After"), 10, 64)
-		if err != nil {
-			return err
-		}
-		return &RateLimitedError{time.Duration(retry) * time.Second}
-	}
-
-	// Slack seems to send an HTML body along with 5xx error codes. Don't parse it.
-	if resp.StatusCode != http.StatusOK {
-		logResponse(resp, d)
-		return statusCodeError{Code: resp.StatusCode, Status: resp.Status}
+	err = checkStatusCode(resp, d)
+	if err != nil {
+		return err
 	}
 
 	return parseResponseBody(resp.Body, intf, d)
@@ -203,16 +216,6 @@ func postForm(ctx context.Context, client httpClient, endpoint string, values ur
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	return doPost(ctx, client, req, intf, d)
-}
-
-// post to a slack web method.
-func postSlackMethod(ctx context.Context, client httpClient, path string, values url.Values, intf interface{}, d debug) error {
-	return postForm(ctx, client, APIURL+path, values, intf, d)
-}
-
-// get a slack web method.
-func getSlackMethod(ctx context.Context, client httpClient, path string, values url.Values, intf interface{}, d debug) error {
-	return getResource(ctx, client, APIURL+path, values, intf, d)
 }
 
 func getResource(ctx context.Context, client httpClient, endpoint string, values url.Values, intf interface{}, d debug) error {
@@ -251,16 +254,28 @@ func okJSONHandler(rw http.ResponseWriter, r *http.Request) {
 	rw.Write(response)
 }
 
-type errorString string
-
-func (t errorString) Error() string {
-	return string(t)
-}
-
 // timerReset safely reset a timer, see time.Timer.Reset for details.
 func timerReset(t *time.Timer, d time.Duration) {
 	if !t.Stop() {
 		<-t.C
 	}
 	t.Reset(d)
+}
+
+func checkStatusCode(resp *http.Response, d debug) error {
+	if resp.StatusCode == http.StatusTooManyRequests {
+		retry, err := strconv.ParseInt(resp.Header.Get("Retry-After"), 10, 64)
+		if err != nil {
+			return err
+		}
+		return &RateLimitedError{time.Duration(retry) * time.Second}
+	}
+
+	// Slack seems to send an HTML body along with 5xx error codes. Don't parse it.
+	if resp.StatusCode != http.StatusOK {
+		logResponse(resp, d)
+		return statusCodeError{Code: resp.StatusCode, Status: resp.Status}
+	}
+
+	return nil
 }
