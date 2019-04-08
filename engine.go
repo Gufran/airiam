@@ -35,34 +35,34 @@ type Config struct {
 	// SlackToken is required and must be a valid bot token.
 	// The bot will attempt to authenticate with Slack RTM API
 	// on boot return an error on authentication failure.
-	SlackToken            string
+	SlackToken string
 
 	// IamRole is the ARN of AWS IAM role that should be
 	// used by the bot to connect with Lex service.
 	// If IamRole is empty the bot will use default AWS
 	// credentials provider chain.
-	IamRole               string
+	IamRole string
 
 	// AwsRegion is the name of AWS region where the Lex
 	// bot is configured.
-	AwsRegion             string
+	AwsRegion string
 
 	// LexBotName is the name of Lex bot that should
 	// be used to parse incoming messages.
-	LexBotName            string
+	LexBotName string
 
 	// LexBotAlias is the version of lex bot to use.
-	LexBotAlias           string
+	LexBotAlias string
 
 	// LogFn will be used to log messages.
-	LogFn                 func(string)
+	LogFn func(string)
 
 	// OnConnectFn is called when the bot successfully connects
 	// with Slack RTM api.
-	OnConnectFn           func()
+	OnConnectFn func()
 
 	// OnErrorFn is called when the RTM api returns an error.
-	OnErrorFn             func(error)
+	OnErrorFn func(error)
 
 	// DefaultEventHandlerFn, if available, will be invoked
 	// to handle RTM events that cannot be handled by the bot.
@@ -132,7 +132,6 @@ func (e *Engine) GetIntentOk(intent string) (Intent, bool) {
 	e.mutex.Unlock()
 	return i, ok
 }
-
 
 // Starts the event loop
 func (e *Engine) Boot(ctx context.Context) error {
@@ -243,7 +242,7 @@ func (e *Engine) brokerMessage(ctx context.Context, msg *slack.MessageEvent) Res
 		return NewErrorResponse(fmt.Errorf("I understand your request but I don't know how to handle it yet. Intent: %q", intent))
 	}
 
-	err = handler.Authorize(msgUser, msgChannel)
+	err = handler.Authorize(ctx, msgUser, msgChannel)
 	if err != nil {
 		return NewErrorResponse(err)
 	}
@@ -259,7 +258,7 @@ func (e *Engine) brokerMessage(ctx context.Context, msg *slack.MessageEvent) Res
 			return NewErrorResponse(err)
 		}
 
-		return handler.Handle(&IncomingMessage{
+		return handler.Handle(ctx, &IncomingMessage{
 			intent:       *output.IntentName,
 			suggestedMsg: *output.Message,
 			user:         msgUser,

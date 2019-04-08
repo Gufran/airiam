@@ -1,6 +1,9 @@
 package airiam
 
-import "github.com/nlopes/slack"
+import (
+	"context"
+	"github.com/nlopes/slack"
+)
 
 // Intent defines an action that can be performed by the bot.
 type Intent interface {
@@ -12,7 +15,7 @@ type Intent interface {
 	// The user is present with the error value returned by this
 	// function if the value is not nil, otherwise the conversation
 	// continues.
-	Authorize(*slack.User, *slack.Channel) error
+	Authorize(context.Context, *slack.User, *slack.Channel) error
 
 	// GetParamsContainer returns a pointer to the struct that
 	// can hold parameters required by the intent.
@@ -24,5 +27,5 @@ type Intent interface {
 
 	// Handle is responsible for handling the intent and
 	// generating a response.
-	Handle(Request) Response
+	Handle(context.Context, Request) Response
 }
