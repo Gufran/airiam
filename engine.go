@@ -160,10 +160,7 @@ func (e *Engine) Boot(ctx context.Context) error {
 					continue
 				}
 
-				mentionMe := fmt.Sprintf("<@%s>", info.User.ID)
-				if strings.Contains(event.Text, mentionMe) {
-					go e.handleMessage(ctx, event)
-				}
+				go e.handleMessage(ctx, event)
 
 			case *slack.RTMError:
 				if e.onErrorFn != nil {
@@ -186,10 +183,54 @@ func (e *Engine) selfMention() string {
 	return fmt.Sprintf("<@%s>", e.selfId)
 }
 
+func (e *Engine) intendedForMe(event *slack.MessageEvent) (bool, error) {
+	if strings.Contains(event.Text, e.selfMention()) {
+		return true, nil
+	}
+
+	if event.ThreadTimestamp == "" {
+		return false, nil
+	}
+
+	history, err := e.rtm.GetChannelHistory(event.Channel, slack.HistoryParameters{
+		Latest:    event.ThreadTimestamp,
+		Inclusive: true,
+		Count:     1,
+	})
+
+	if err != nil {
+		return false, err
+	}
+
+	if len(history.Messages) != 1 {
+		return false, nil
+	}
+
+	if strings.Contains(history.Messages[0].Text, e.selfMention()) && event.User == history.Messages[0].User {
+		return true, nil
+	}
+
+	return false, nil
+}
+
 func (e *Engine) handleMessage(ctx context.Context, msg *slack.MessageEvent) {
 	respWriter := makeResponseWriter(ctx, e.rtm, msg)
+
+	matched, err := e.intendedForMe(msg)
+	if err != nil {
+		werr := respWriter.write("not sure if that was for me. you can mention my name in messages intended for me. (err: "+ err.Error() +")")
+		if werr != nil {
+			e.log(werr.Error())
+		}
+		return
+	}
+
+	if !matched {
+		return
+	}
+
 	resp := e.brokerMessage(ctx, msg)
-	err := respWriter.write(resp.GetMessage())
+	err = respWriter.write(resp.GetMessage())
 	if err != nil {
 		e.log(err.Error())
 	}
