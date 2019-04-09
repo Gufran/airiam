@@ -192,10 +192,11 @@ func (e *Engine) intendedForMe(event *slack.MessageEvent) (bool, error) {
 		return false, nil
 	}
 
-	history, err := e.rtm.GetChannelHistory(event.Channel, slack.HistoryParameters{
-		Latest:    event.ThreadTimestamp,
+	history, err := e.rtm.GetConversationHistory(&slack.GetConversationHistoryParameters{
+		ChannelID: event.Channel,
 		Inclusive: true,
-		Count:     1,
+		Latest:    event.ThreadTimestamp,
+		Limit:     1,
 	})
 
 	if err != nil {
@@ -218,6 +219,7 @@ func (e *Engine) handleMessage(ctx context.Context, msg *slack.MessageEvent) {
 
 	matched, err := e.intendedForMe(msg)
 	if err != nil {
+		e.log(err.Error())
 		return
 	}
 
