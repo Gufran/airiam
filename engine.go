@@ -228,7 +228,7 @@ func (e *Engine) brokerMessage(ctx context.Context, msg *slack.MessageEvent) Res
 		return NewErrorResponse(fmt.Errorf("failed to load user details for user ID %q. %s", msg.User, err))
 	}
 
-	msgChannel, err := e.rtm.GetChannelInfo(msg.Channel)
+	msgChannel, err := e.rtm.GetConversationInfoContext(ctx, msg.Channel, false)
 	if err != nil {
 		return NewErrorResponse(fmt.Errorf("failed to load channel details for channel ID %q. %s", msg.Channel, err))
 	}
