@@ -218,10 +218,6 @@ func (e *Engine) handleMessage(ctx context.Context, msg *slack.MessageEvent) {
 
 	matched, err := e.intendedForMe(msg)
 	if err != nil {
-		werr := respWriter.write("not sure if that was for me. you can mention my name in messages intended for me. (err: "+ err.Error() +")")
-		if werr != nil {
-			e.log(werr.Error())
-		}
 		return
 	}
 
