@@ -183,13 +183,14 @@ func (e *Engine) selfMention() string {
 	return fmt.Sprintf("<@%s>", e.selfId)
 }
 
-func (e *Engine) intendedForMe(event *slack.MessageEvent) (bool, error) {
+func (e *Engine) intendedForMe(event *slack.MessageEvent) (bool, error, string) {
+
 	if strings.Contains(event.Text, e.selfMention()) {
-		return true, nil
+		return true, nil, event.Text
 	}
 
 	if event.ThreadTimestamp == "" {
-		return false, nil
+		return false, nil, event.Text
 	}
 
 	history, err := e.rtm.GetConversationHistory(&slack.GetConversationHistoryParameters{
@@ -200,24 +201,35 @@ func (e *Engine) intendedForMe(event *slack.MessageEvent) (bool, error) {
 	})
 
 	if err != nil {
-		return false, err
+		return false, err, event.Text
 	}
 
 	if len(history.Messages) != 1 {
-		return false, nil
+		return false, nil, event.Text
 	}
 
 	if strings.Contains(history.Messages[0].Text, e.selfMention()) && event.User == history.Messages[0].User {
-		return true, nil
+
+		length := len(history.Messages)
+
+		if event.Text[0] == 'y' {
+			return true, nil, history.Messages[length-3].Text
+		} else if event.Text[0] == 'n' {
+			return false, nil, ""
+		} else {
+			return true, nil, history.Latest
+		}
+
 	}
 
-	return false, nil
+	return false, nil, event.Text
 }
 
 func (e *Engine) handleMessage(ctx context.Context, msg *slack.MessageEvent) {
 	respWriter := makeResponseWriter(ctx, e.rtm, msg)
 
-	matched, err := e.intendedForMe(msg)
+	matched, err, text := e.intendedForMe(msg)
+
 	if err != nil {
 		e.log(err.Error())
 		return
@@ -227,7 +239,7 @@ func (e *Engine) handleMessage(ctx context.Context, msg *slack.MessageEvent) {
 		return
 	}
 
-	resp := e.brokerMessage(ctx, msg)
+	resp := e.brokerMessage(ctx, msg, text)
 	err = respWriter.write(resp.GetMessage())
 	if err != nil {
 		e.log(err.Error())
@@ -239,29 +251,31 @@ func (e *Engine) handleMessage(ctx context.Context, msg *slack.MessageEvent) {
 	}
 }
 
-func (e *Engine) brokerMessage(ctx context.Context, msg *slack.MessageEvent) Response {
-	msgText := strings.Replace(msg.Text, e.selfMention(), "", -1)
+func (e *Engine) brokerMessage(ctx context.Context, msg *slack.MessageEvent, text string) Response {
+
+	var flag = 0
+
+	msgText := strings.Replace(msg.Text, e.selfMention(), "", -1) // replaces the self mention from the input message
+
 	ts := msg.ThreadTimestamp
 	if ts == "" {
 		ts = msg.Timestamp
 	}
 
-	userId := fmt.Sprintf("%s-%s-%s", msg.Channel, msg.User, ts)
-
-	input := &lexruntimeservice.PostTextInput{
-		BotAlias:  aws.String(e.lexAlias),
-		BotName:   aws.String(e.lexName),
-		InputText: aws.String(msgText),
-		UserId:    aws.String(userId),
+	if msgText[0] == 'y' { // if the message returned is confirmation message from the user
+		msgText = text // takes the previous message inputed as the actual message
+		flag = 1       // changes the flag parameter to 1 so confirmation won't be required for this input
 	}
 
-	output, err := e.lex.PostText(input)
-	if err != nil {
-		return NewErrorResponse(err)
+	arguments := strings.Split(msgText, " ") //splits the input message of user into an array
+
+	handler, ok :=
+		e.GetIntentOk(arguments[0]) //intent will be defined by first argument of input message
+
+	if !ok {
+		return NewErrorResponse(fmt.Errorf("I understand your request but I don't know how to handle it yet. Intent: %q. ", arguments[0]))
 	}
 
-	intent := aws.StringValue(output.IntentName)
-	state := aws.StringValue(output.DialogState)
 	msgUser, err := e.rtm.GetUserInfo(msg.User)
 	if err != nil {
 		return NewErrorResponse(fmt.Errorf("failed to load user details for user ID %q. %s", msg.User, err))
@@ -272,57 +286,111 @@ func (e *Engine) brokerMessage(ctx context.Context, msg *slack.MessageEvent) Res
 		return NewErrorResponse(fmt.Errorf("failed to load channel details for channel ID %q. %s", msg.Channel, err))
 	}
 
-	if state == "ElicitIntent" || state == "Failed" {
-		return NewReplyResponse(aws.StringValue(output.Message))
-	}
-
-	handler, ok := e.GetIntentOk(intent)
-	if !ok {
-		return NewErrorResponse(fmt.Errorf("I understand your request but I don't know how to handle it yet. Intent: %q", intent))
-	}
-
 	err = handler.Authorize(ctx, msgUser, msgChannel)
 	if err != nil {
 		return NewErrorResponse(err)
 	}
 
-	switch state {
-	case "ConfirmIntent", "ElicitSlot":
-		return NewReplyResponse(aws.StringValue(output.Message))
-	case "ReadyForFulfillment":
-		return NewReplyResponse("Lex says that the intent is ready for fulfillment, I cannot handle this dialog state yet.")
-	case "Fulfilled":
-		err := loadParams(handler.GetParamsContainer(), output.Slots)
-		if err != nil {
-			return NewErrorResponse(err)
-		}
-
-		return handler.Handle(ctx, &IncomingMessage{
-			intent:       *output.IntentName,
-			suggestedMsg: *output.Message,
-			user:         msgUser,
-			channel:      msgChannel,
-		})
-	default:
-		// Unknown dialog state.
-		// This can happen due to a change in Lex API response
-		// but otherwise we should never hit this case.
-		return NewReplyResponse("I'm having problem with AWS Lex service response. Lex returned the dialog state %q and I don't know what to do with that. Perhaps you can update my code to be compatible with latest Lex API", state)
-	}
-}
-
-func loadParams(container interface{}, attrs map[string]*string) error {
-	decoder, err := mapstructure.NewDecoder(&mapstructure.DecoderConfig{
-		ErrorUnused:      true,
-		ZeroFields:       true,
-		WeaklyTypedInput: true,
-		Result:           container,
-		TagName:          "attr",
-	})
-
+	err = handler.PutParams(ctx, arguments)
 	if err != nil {
-		return fmt.Errorf("failed to initialize attribute decoder. %s", err)
+		return NewErrorResponse(err)
 	}
 
-	return decoder.Decode(attrs)
+	switch flag {
+
+	case 1:
+		return handler.Handle(ctx, &IncomingMessage{
+			intent: arguments[0],
+			suggestedMsg: "	",
+			user:    msgUser,
+			channel: msgChannel,
+		})
+	case 0:
+		return handler.Confirm(ctx, arguments)
+	}
+
+	return NewReplyResponse("somethings wrong ERROR!")
+
 }
+
+//////////////
+//	userId := fmt.Sprintf("%s-%s-%s", msg.Channel, msg.User, ts)
+//
+//	input := &lexruntimeservice.PostTextInput{
+//		BotAlias:  aws.String(e.lexAlias),
+//		BotName:   aws.String(e.lexName),
+//		InputText: aws.String(msgText),
+//		UserId:    aws.String(userId),
+//	}
+//
+//	output, err := e.lex.PostText(input)   //this outputs dialog state, intent name, message, slots, slot_to_elicit
+//	if err != nil {
+//		return NewErrorResponse(err)
+//	}
+//
+//	intent := aws.StringValue(output.IntentName)
+//	state := aws.StringValue(output.DialogState)
+//	msgUser, err := e.rtm.GetUserInfo(msg.User)
+//	if err != nil {
+//		return NewErrorResponse(fmt.Errorf("failed to load user details for user ID %q. %s", msg.User, err))
+//	}
+//
+//	msgChannel, err := e.rtm.GetConversationInfoContext(ctx, msg.Channel, false)
+//	if err != nil {
+//		return NewErrorResponse(fmt.Errorf("failed to load channel details for channel ID %q. %s", msg.Channel, err))
+//	}
+//
+//	if state == "ElicitIntent" || state == "Failed" {
+//		return NewReplyResponse(aws.StringValue(output.Message))
+//	}
+//
+//	handler, ok := e.GetIntentOk(intent)
+//	if !ok {
+//		return NewErrorResponse(fmt.Errorf("I understand your request but I don't know how to handle it yet. Intent: %q", intent))
+//	}
+//
+//	err = handler.Authorize(ctx, msgUser, msgChannel)
+//	if err != nil {
+//		return NewErrorResponse(err)
+//	}
+//
+//	switch state {
+//	case "ConfirmIntent", "ElicitSlot":
+//		return NewReplyResponse(aws.StringValue(output.Message))
+//	case "ReadyForFulfillment":
+//		return NewReplyResponse("Lex says that the intent is ready for fulfillment, I cannot handle this dialog state yet.")
+//	case "Fulfilled":
+//		err := loadParams(handler.GetParamsContainer(), output.Slots)   //PROBLEM
+//		if err != nil {
+//			return NewErrorResponse(err)
+//		}
+//
+//		return handler.Handle(ctx, &IncomingMessage{
+//			intent:       *output.IntentName,
+//			suggestedMsg: *output.Message,
+//			user:         msgUser,
+//			channel:      msgChannel,
+//		})
+//	default:
+//		// Unknown dialog state.
+//		// This can happen due to a change in Lex API response
+//		// but otherwise we should never hit this case.
+//		return NewReplyResponse("I'm having problem with AWS Lex service response. Lex returned the dialog state %q and I don't know what to do with that. Perhaps you can update my code to be compatible with latest Lex API", state)
+//	}
+//}
+//
+//func loadParams(container interface{}, attrs map[string]*string) error {
+//	decoder, err := mapstructure.NewDecoder(&mapstructure.DecoderConfig{
+//		ErrorUnused:      true,
+//		ZeroFields:       true,
+//		WeaklyTypedInput: true,
+//		Result:           container,
+//		TagName:          "attr",
+//	})
+//
+//	if err != nil {
+//		return fmt.Errorf("failed to initialize attribute decoder. %s", err)
+//	}
+//
+//	return decoder.Decode(attrs)
+//}
