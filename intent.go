@@ -25,6 +25,13 @@ type Intent interface {
 	// named attribute in target struct you can use `attr` tag.
 	GetParamsContainer() interface{}
 
+	// PutParams fucntion takes arguments provided by user in form
+	// of array of strings {intent, branch, application, environment}
+	// and puts them into the assigned parameters
+	PutParams(context.Context, []string) error
+
+	Confirm(context.Context, []string) Response
+
 	// Handle is responsible for handling the intent and
 	// generating a response.
 	Handle(context.Context, Request) Response
