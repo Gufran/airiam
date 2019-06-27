@@ -30,6 +30,15 @@ type Engine struct {
 	lex      lexruntimeserviceiface.LexRuntimeServiceAPI
 }
 
+type Message struct {
+	event *slack.MessageEvent
+	previousText string  ""
+	confirm map[string]bool
+	userId string
+}
+
+var m = Message{}
+
 // Config is required to create a new Engine.
 type Config struct {
 	// SlackToken is required and must be a valid bot token.
@@ -116,6 +125,7 @@ func New(config *Config) (*Engine, error) {
 	}, nil
 }
 
+
 // AddIntent is used to register a new intent or overwrite
 // and already registered one.
 func (e *Engine) AddIntent(name string, intent Intent) {
@@ -183,14 +193,24 @@ func (e *Engine) selfMention() string {
 	return fmt.Sprintf("<@%s>", e.selfId)
 }
 
-func (e *Engine) intendedForMe(event *slack.MessageEvent) (bool, error, string) {
+func (e *Engine) intendedForMe(event *slack.MessageEvent) (bool, error) {
+
+	m.event = event
+
+	ts := event.ThreadTimestamp
+	if ts == "" {
+		ts = event.Timestamp
+	}
+	userId := fmt.Sprintf("%s-%s-%s", event.Channel, event.User, ts)
+
+	m.userId = userId
 
 	if strings.Contains(event.Text, e.selfMention()) {
-		return true, nil, event.Text
+		return true, nil
 	}
 
 	if event.ThreadTimestamp == "" {
-		return false, nil, event.Text
+		return false, nil
 	}
 
 	history, err := e.rtm.GetConversationHistory(&slack.GetConversationHistoryParameters{
@@ -201,34 +221,38 @@ func (e *Engine) intendedForMe(event *slack.MessageEvent) (bool, error, string) 
 	})
 
 	if err != nil {
-		return false, err, event.Text
+		return false, err
 	}
 
 	if len(history.Messages) != 1 {
-		return false, nil, event.Text
+		return false, nil
 	}
+
+
 
 	if strings.Contains(history.Messages[0].Text, e.selfMention()) && event.User == history.Messages[0].User {
 
 		length := len(history.Messages)
 
 		if event.Text[0] == 'y' {
-			return true, nil, history.Messages[length-3].Text
+			m.confirm[userId] = true
+			m.previousText = history.Messages[length-3].Text
+			return true, nil
 		} else if event.Text[0] == 'n' {
-			return false, nil, ""
+			return false, nil
 		} else {
-			return true, nil, history.Latest
+			return true, nil
 		}
 
 	}
 
-	return false, nil, event.Text
+	return false, nil
 }
 
 func (e *Engine) handleMessage(ctx context.Context, msg *slack.MessageEvent) {
 	respWriter := makeResponseWriter(ctx, e.rtm, msg)
 
-	matched, err, text := e.intendedForMe(msg)
+	matched, err := e.intendedForMe(msg)
 
 	if err != nil {
 		e.log(err.Error())
@@ -239,7 +263,7 @@ func (e *Engine) handleMessage(ctx context.Context, msg *slack.MessageEvent) {
 		return
 	}
 
-	resp := e.brokerMessage(ctx, msg, text)
+	resp := e.brokerMessage(ctx, msg)
 	err = respWriter.write(resp.GetMessage())
 	if err != nil {
 		e.log(err.Error())
@@ -251,22 +275,14 @@ func (e *Engine) handleMessage(ctx context.Context, msg *slack.MessageEvent) {
 	}
 }
 
-func (e *Engine) brokerMessage(ctx context.Context, msg *slack.MessageEvent, text string) Response {
+func (e *Engine) brokerMessage(ctx context.Context, msg *slack.MessageEvent) Response {
 
-	confirm := make(map[string]bool) //map variable for holding confirmation info
+	var msgText string
 
-	msgText := strings.Replace(msg.Text, e.selfMention()+" ", "", -1) // replaces the self mention from the input message
-
-	ts := msg.ThreadTimestamp
-	if ts == "" {
-		ts = msg.Timestamp
-	}
-
-	userId := fmt.Sprintf("%s-%s-%s", msg.Channel, msg.User, ts)
-
-	if msgText[0] == 'y' { // if the message returned is confirmation message from the user
-		msgText = text // takes the previous message inputed as the actual message
-		confirm[userId] = true
+	if m.confirm[m.userId] {
+		msgText = strings.Replace(m.previousText, e.selfMention()+" ", "", -1)
+	}else{
+		msgText = strings.Replace(msg.Text, e.selfMention()+" ", "", -1)
 	}
 
 	arguments := strings.Split(msgText, " ") //splits the input message of user into an array
@@ -298,7 +314,7 @@ func (e *Engine) brokerMessage(ctx context.Context, msg *slack.MessageEvent, tex
 		return NewErrorResponse(err)
 	}
 
-	if confirm[userId] {
+	if m.confirm[m.userId] {
 		return handler.Handle(ctx, &IncomingMessage{
 			intent: arguments[0],
 			suggestedMsg: "working on it",
