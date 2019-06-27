@@ -17,13 +17,12 @@ type Intent interface {
 	// continues.
 	Authorize(context.Context, *slack.User, *slack.Channel) error
 
-	// GetParamsContainer returns a pointer to the struct that
-	// can hold parameters required by the intent.
-	// A non-pointer value will result in an error that will be
-	// presented to the user.
-	// To map values from one source attribute to a differently
-	// named attribute in target struct you can use `attr` tag.
-	GetParamsContainer() interface{}
+	// PutParams fucntion takes arguments provided by user in form
+	// of array of strings {intent, branch, application, environment}
+	// and puts them into the assigned parameters
+	LoadParams(context.Context, []string) error
+
+	ConfirmationMessage(context.Context, []string) Response
 
 	// Handle is responsible for handling the intent and
 	// generating a response.
